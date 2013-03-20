@@ -113,7 +113,9 @@ parseQilinPrim :: Parser QilinPrim
 parseQilinPrim = parseNumber <|> parseString <|> parseVar <|> parseQilinFunVar
 
 parseQilinProgram :: Parser QilinProgram
-parseQilinProgram = liftM Program $ sepBy1 parseQilinLang space
+parseQilinProgram = do program <- endBy1 parseQilinLang newline
+                       skipMany newline
+                       return $ Program program
 
 parseQilinPrimVal :: Parser QilinVal
 parseQilinPrimVal = liftM (Prim) $ parseQilinPrim
@@ -156,15 +158,13 @@ parseQilinFunVar = liftM (FunVar) $ many1 symbol
 
 
 parseQilinLang :: Parser QilinLang
-parseQilinLang = parseQilinLangDef <|> parseQilinLangVal 
-
+parseQilinLang =  (parseQilinLangDef <|> parseQilinLangVal)  
 
 parseInput input = parse parseQilinProgram "Qilin" input 
 
-runProgram (Left err)  = putStrLn $ "No match: " ++ show err
-runProgram (Right ast) = putStrLn $ (show ast) ++ "\nEvaluates To:\n" ++ (show $ qompQilin ast)
+runProgram (Left err)  = "No match: " ++ show err
+runProgram (Right ast) = (show ast) ++ "\nEvaluates To:\n" ++ (show $ qompQilin ast) ++ "\n"
 
-main = forever $ do input <- getLine
-                    runProgram $ parseInput input
+main = sequence . repeat . interact $ runProgram . parseInput 
 
 

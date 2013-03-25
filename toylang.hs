@@ -43,6 +43,14 @@ qilinPlus fs qv = do v <- eval fs qv
                                   y' <- eval fs y
                                   qilinAdd x' y'
 
+{-
+qilinEval :: M.Map String QilinVal -> QilinVal -> Maybe QilinVal
+qilinEval fs (Prim (Number x)) = Nothing
+qilinEval fs (Prim (String s)) = return $ FunVal $ PrimFun $ const $ (\fs' qv' -> eatQilin' fs f >>= flip (apply fs') qv')
+        where f = parseInput s
+              eatQilin' = eatQilin funs $ map getVals' $ filter getVals xs $ parseInput s 
+-}
+
 
 qilinK :: QilinVal -> Maybe QilinVal
 qilinK v = Just $ FunVal $ PrimFun $ const (\x -> Just v)
@@ -58,9 +66,6 @@ qilinI v = Just v
 qompQilin (Program xs) = let funs = foldl stuffInto opMap $ map getDecs' $ filter getDecs xs
                          in do val <- eatQilin funs $ map getVals' $ filter getVals xs 
                                eval funs val
-
-foldl1Safe f def []  = def
-foldl1Safe f _ xs    = foldl1 f xs
 
 stuffInto :: M.Map String QilinVal -> FunDef -> M.Map String QilinVal
 stuffInto mp (FunDef name xs) = M.insert name (FunVal $ Fun xs) mp 
@@ -131,15 +136,16 @@ parseQilinPrim :: Parser QilinPrim
 parseQilinPrim = parseNumber <|> parseString <|> parseVar <|> parseQilinFunVar
 
 parseQilinProgram :: Parser QilinProgram
-parseQilinProgram = do program <- endBy1 parseQilinLang newline
+parseQilinProgram = do program <- sepEndBy1 parseQilinLang newline
                        skipMany newline
-                       return $ Program program
+                       return $ Program $ concat program
 
 parseQilinPrimVal :: Parser QilinVal
 parseQilinPrimVal = liftM (Prim) $ parseQilinPrim
 
-parseQilinLangVal :: Parser QilinLang 
-parseQilinLangVal = liftM (Val) $ parseQilinVal
+parseQilinLangVal :: Parser [QilinLang]
+parseQilinLangVal = do vs <- sepBy parseQilinVal spaces
+                       return $ map (Val) vs 
 
 parseQilinLangDef :: Parser QilinLang 
 parseQilinLangDef = liftM (Decl) $ parseQilinDef
@@ -175,14 +181,15 @@ parseQilinFunVar :: Parser QilinPrim
 parseQilinFunVar = liftM (FunVar) $ many1 symbol <|> (liftM return upper)
 
 
-parseQilinLang :: Parser QilinLang
-parseQilinLang =  (parseQilinLangDef <|> parseQilinLangVal)  
+parseQilinLang :: Parser [QilinLang]
+parseQilinLang =  (liftM (:[]) parseQilinLangDef <|> parseQilinLangVal)  
 
 parseInput input = parse parseQilinProgram "Qilin" input 
 
 runProgram (Left err)  = "No match: " ++ show err
 runProgram (Right ast) = (show ast) ++ "\nEvaluates To:\n" ++ (show $ qompQilin ast) ++ "\n"
 
-main = sequence . repeat . interact $ runProgram . parseInput 
+main = forever $ do xs <- getLine
+                    putStr $ runProgram . parseInput $ xs
 
 

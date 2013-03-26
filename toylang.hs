@@ -3,8 +3,15 @@
 import Text.ParserCombinators.Parsec
 import Control.Monad
 import System.Environment
+import Data.List
 import qualified Data.Map as M
+import Control.Applicative ((<*>), (<$>))
+import Control.Monad.Fix
+import Control.Monad.Trans.Maybe
+import Control.Monad.Trans
 
+
+type QilinMap = M.Map String QilinVal
 
 data QilinProgram = Program [QilinLang]
                        deriving (Show)
@@ -27,7 +34,7 @@ data QilinPrim =  Number Integer
                 | FunVar String 
                 deriving (Show)
 
-data QilinFun = PrimFun (M.Map String QilinVal -> QilinVal -> Maybe QilinVal)
+data QilinFun = PrimFun (QilinMap -> QilinVal -> Maybe QilinVal)
                   | Fun [QilinVal]
 
 instance Show QilinFun where
@@ -65,7 +72,11 @@ qilinI v = Just v
 
 qompQilin (Program xs) = let funs = foldl stuffInto opMap $ map getDecs' $ filter getDecs xs
                          in do val <- eatQilin funs $ map getVals' $ filter getVals xs 
-                               eval funs val
+                               return $ totalEval funs val
+
+qompQilinRepl opMap (Program xs) = let funs = foldl stuffInto opMap $ map getDecs' $ filter getDecs xs
+                                   in do val <- eatQilin funs $ map getVals' $ filter getVals xs 
+                                         return $ (totalEval funs val, funs)
 
 stuffInto :: M.Map String QilinVal -> FunDef -> M.Map String QilinVal
 stuffInto mp (FunDef name xs) = M.insert name (FunVal $ Fun xs) mp 
@@ -97,6 +108,17 @@ opMap = M.insert "S" (FunVal $ PrimFun $ const qilinS) $
         M.insert "I" (FunVal $ PrimFun $ const qilinI) $ 
         M.insert "K" (FunVal $ PrimFun $ const qilinK) $
         M.insert "+"  (FunVal $ PrimFun qilinPlus) M.empty
+
+eval' ::  M.Map String QilinVal -> QilinVal -> Maybe QilinVal
+eval' fs (Parens xs) = eatQilin fs xs
+eval' fs (Prim (FunVar s)) = M.lookup s fs
+eval' fs (FunVal (Fun xs)) = eatQilin fs xs
+eval' fs x = Nothing
+
+w f x = f x x 
+
+totalEval :: QilinMap -> QilinVal -> [QilinVal]
+totalEval = (<*> return) . ((++) .) . unfoldr . (fmap (w (,)) .) . eval' 
 
 eval ::  M.Map String QilinVal -> QilinVal -> Maybe QilinVal
 eval fs (Parens xs) = eatQilin fs xs
@@ -186,10 +208,21 @@ parseQilinLang =  (liftM (:[]) parseQilinLangDef <|> parseQilinLangVal)
 
 parseInput input = parse parseQilinProgram "Qilin" input 
 
-runProgram (Left err)  = "No match: " ++ show err
-runProgram (Right ast) = (show ast) ++ "\nEvaluates To:\n" ++ (show $ qompQilin ast) ++ "\n"
+fstAp = (<*> snd) . (. fst) . ((,) .)
 
-main = forever $ do xs <- getLine
-                    putStr $ runProgram . parseInput $ xs
+runProgram  _   (Left err)  = Just ("No match: " ++ show err, M.empty)
+runProgram funs (Right ast) =  fstAp <$> return printAst <*> qompQilinRepl funs ast 
+                          where printAst x = (show ast) ++ "\nEvaluates To:\n" ++ (show $ x) ++ "\n"
+
+
+repl :: QilinMap -> MaybeT IO QilinMap
+repl funs = do xs <- lift getLine
+               (ast, funs') <- MaybeT . return $  (runProgram funs) . parseInput $ xs
+               lift $ putStr ast
+               return (funs `M.union` funs')
+
+mrepeat f a = mrepeat f =<< f a
+
+main = runMaybeT $ mrepeat repl opMap 
 
 

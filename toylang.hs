@@ -9,6 +9,7 @@ import Control.Applicative ((<*>), (<$>))
 import Control.Monad.Fix
 import Control.Monad.Trans.Maybe
 import Control.Monad.Trans
+import System.IO
 
 
 type QilinMap = M.Map String QilinVal
@@ -32,14 +33,19 @@ data QilinPrim =  Number Integer
                 | String String
                 | Var String
                 | FunVar String 
-                deriving (Show)
+                deriving (Show, Eq)
 
 data QilinFun = PrimFun (QilinMap -> QilinVal -> Maybe QilinVal)
                   | Fun [QilinVal]
 
 instance Show QilinFun where
    show (PrimFun f) = "PrimFun"
-   show (Fun xs) = "Fun " ++ concatMap show xs  
+   show (Fun xs) = "Fun " ++ concatMap show xs
+
+instance Eq QilinVal where
+    (Prim a) == (Prim b) = a == b
+    _ == _ = False 
+
 
 qilinPlus :: M.Map String QilinVal -> QilinVal -> Maybe QilinVal
 qilinPlus fs qv = do v <- eval fs qv
@@ -50,13 +56,10 @@ qilinPlus fs qv = do v <- eval fs qv
                                   y' <- eval fs y
                                   qilinAdd x' y'
 
-{-
-qilinEval :: M.Map String QilinVal -> QilinVal -> Maybe QilinVal
-qilinEval fs (Prim (Number x)) = Nothing
-qilinEval fs (Prim (String s)) = return $ FunVal $ PrimFun $ const $ (\fs' qv' -> eatQilin' fs f >>= flip (apply fs') qv')
-        where f = parseInput s
-              eatQilin' = eatQilin funs $ map getVals' $ filter getVals xs $ parseInput s 
--}
+qilinEq :: QilinMap -> QilinVal -> Maybe QilinVal
+qilinEq qmap qv = Just $ FunVal $ PrimFun $ (\qmap' qv' -> if (totalEval' qmap qv) == (totalEval' qmap' qv') 
+                                                           then (Just $ Prim $ Number 1) else (Just $ Prim $ Number 0))
+                 where totalEval' funs expr = head $ totalEval funs expr
 
 
 qilinK :: QilinVal -> Maybe QilinVal
@@ -75,8 +78,9 @@ qompQilin (Program xs) = let funs = foldl stuffInto opMap $ map getDecs' $ filte
                                return $ totalEval funs val
 
 qompQilinRepl opMap (Program xs) = let funs = foldl stuffInto opMap $ map getDecs' $ filter getDecs xs
-                                   in do val <- eatQilin funs $ map getVals' $ filter getVals xs 
-                                         return $ (totalEval funs val, funs)
+                                       val  = do expr <- eatQilin funs $ map getVals' $ filter getVals xs
+                                                 return $ head $ totalEval funs expr  
+                                   in (val, funs)
 
 stuffInto :: M.Map String QilinVal -> FunDef -> M.Map String QilinVal
 stuffInto mp (FunDef name xs) = M.insert name (FunVal $ Fun xs) mp 
@@ -104,7 +108,8 @@ eatQilin _ [] = Nothing
 
 
 opMap :: M.Map String QilinVal
-opMap = M.insert "S" (FunVal $ PrimFun $ const qilinS) $ 
+opMap = M.insert "=" (FunVal $ PrimFun $      qilinEq) $
+        M.insert "S" (FunVal $ PrimFun $ const qilinS) $ 
         M.insert "I" (FunVal $ PrimFun $ const qilinI) $ 
         M.insert "K" (FunVal $ PrimFun $ const qilinK) $
         M.insert "+"  (FunVal $ PrimFun qilinPlus) M.empty
@@ -210,15 +215,38 @@ parseInput input = parse parseQilinProgram "Qilin" input
 
 fstAp = (<*> snd) . (. fst) . ((,) .)
 
-runProgram  _   (Left err)  = Just ("No match: " ++ show err, M.empty)
-runProgram funs (Right ast) =  fstAp <$> return printAst <*> qompQilinRepl funs ast 
+runProgram  _   (Left err)  =  ("No match: " ++ show err, M.empty)
+runProgram funs (Right ast) =  fstAp printAst $ qompQilinRepl funs ast 
                           where printAst x = (show ast) ++ "\nEvaluates To:\n" ++ (show $ x) ++ "\n"
+
+runAndPrintProgram funs xs = let (ast, funs') = (runProgram funs) . parseInput $ xs
+                             in do putStr ast
+                                   return funs'
+
+eitherToMaybe :: (a -> Either b c) -> a -> (Maybe c)
+eitherToMaybe f a = case (f a) of 
+                       (Left err) -> Nothing
+                       (Right rv) -> Just rv
+
+getFuns :: Handle -> IO (Maybe QilinMap)
+getFuns handle = runMaybeT $ do lift $ putStrLn ("Loading file : " ++ show handle) >> hFlush stdout
+                                xs  <- lift $ hGetContents handle
+                                (Program ast) <- (MaybeT . return ) $ eitherToMaybe parseInput xs
+                                return $ foldl stuffInto opMap $ map getDecs' $ filter getDecs ast
+
+
+loadLib :: QilinMap -> String -> MaybeT IO QilinMap
+loadLib qmap xs = let filenames = tail $ words xs
+                  in do xs <- lift $ mapM (flip (flip withFile ReadMode) getFuns) filenames
+                        MaybeT . return $ foldr ((<*>) . (M.union <$>)) (Just M.empty) xs
+
 
 
 repl :: QilinMap -> MaybeT IO QilinMap
-repl funs = do xs <- lift getLine
-               (ast, funs') <- MaybeT . return $  (runProgram funs) . parseInput $ xs
-               lift $ putStr ast
+repl funs = do lift $ putStr "pixiu>>>" >> hFlush stdout
+               xs <- lift getLine
+               guard (xs /= "quit")
+               funs' <- if and (zipWith (==) "load " xs) then loadLib funs xs else lift $ runAndPrintProgram funs xs
                return (funs `M.union` funs')
 
 mrepeat f a = mrepeat f =<< f a

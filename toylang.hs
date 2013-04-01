@@ -26,13 +26,14 @@ data QilinLang = Val QilinVal
                   deriving (Show)
 
 data QilinVal = Prim QilinPrim | FunVal QilinFun | List [QilinVal]
-              | Parens [QilinVal]
+              | Parens [QilinVal] | Quote [QilinVal]
                 deriving (Show)
 
 data QilinPrim =  Number Integer
                 | String String
                 | Var String
-                | FunVar String 
+                | FunVar String
+                | Bool Bool 
                 deriving (Show, Eq)
 
 data QilinFun = PrimFun (QilinMap -> QilinVal -> Maybe QilinVal)
@@ -40,7 +41,7 @@ data QilinFun = PrimFun (QilinMap -> QilinVal -> Maybe QilinVal)
 
 instance Show QilinFun where
    show (PrimFun f) = "PrimFun"
-   show (Fun xs) = "Fun " ++ concatMap show xs
+   show (Fun xs) = "Fun " ++ show xs
 
 instance Eq QilinVal where
     (Prim a) == (Prim b) = a == b
@@ -56,11 +57,18 @@ qilinPlus fs qv = do v <- eval fs qv
                                   y' <- eval fs y
                                   qilinAdd x' y'
 
+fundef = Just . FunVal . PrimFun
+
 qilinEq :: QilinMap -> QilinVal -> Maybe QilinVal
 qilinEq qmap qv = Just $ FunVal $ PrimFun $ (\qmap' qv' -> if (totalEval' qmap qv) == (totalEval' qmap' qv') 
-                                                           then (Just $ Prim $ Number 1) else (Just $ Prim $ Number 0))
+                                                           then (Just $ Prim $ Bool True) else (Just $ Prim $ Bool False))
                  where totalEval' funs expr = head $ totalEval funs expr
 
+qilinIf :: QilinMap -> QilinVal -> Maybe QilinVal
+qilinIf qmap qv = fundef $ (\qmap' qv' -> fundef $ (\qmap'' qv'' -> if' (head $ totalEval qmap qv) qv' qv'' ))
+                where if' (Prim (Bool True)) y n  = Just $ FunVal $ Fun $ [y]
+                      if' (Prim (Bool False)) y n = Just $ FunVal $ Fun $ [n]
+                      if' _ _ _  = undefined
 
 qilinK :: QilinVal -> Maybe QilinVal
 qilinK v = Just $ FunVal $ PrimFun $ const (\x -> Just v)
@@ -108,7 +116,8 @@ eatQilin _ [] = Nothing
 
 
 opMap :: M.Map String QilinVal
-opMap = M.insert "=" (FunVal $ PrimFun $      qilinEq) $
+opMap = M.insert "?" (FunVal $ PrimFun $      qilinIf) $
+        M.insert "=" (FunVal $ PrimFun $      qilinEq) $
         M.insert "S" (FunVal $ PrimFun $ const qilinS) $ 
         M.insert "I" (FunVal $ PrimFun $ const qilinI) $ 
         M.insert "K" (FunVal $ PrimFun $ const qilinK) $
@@ -131,7 +140,17 @@ eval fs (Prim (FunVar s)) = M.lookup s fs
 eval fs (FunVal (Fun xs)) = eatQilin fs xs
 eval fs x = Just x
 
+foldList :: [QilinVal] -> QilinVal -> QilinVal
+foldList [] f  = (Prim (FunVar "I"))
+foldList [x] f = Parens [f,x]
+foldList (x:xs) f =  Parens [(Prim (FunVar "B")), Parens [f,x], Parens [foldList xs f]] 
+
 apply ::  M.Map String QilinVal -> QilinVal -> QilinVal -> Maybe QilinVal
+apply fs (Quote xs) f = eatQilin fs (xs ++ [f])
+apply fs f (Prim (FunVar s)) = do x <- M.lookup s fs
+                                  apply fs f x
+apply fs f (Quote xs) = eatQilin fs (f:xs)
+apply fs (List xs) x = Just $ foldList xs x
 apply fs (FunVal (PrimFun f)) x = f fs x
 apply fs (Parens xs) x = eatQilin fs xs >>= flip (apply fs) x
 apply fs (FunVal (Fun xs)) x = eatQilin fs >=> flip (apply fs) x $ xs
@@ -139,12 +158,15 @@ apply fs (Prim (FunVar s)) x = do f <- M.lookup s fs
                                   apply fs f x
 
 apply fs f (Parens xs) = (apply fs f) =<< eatQilin fs xs
-apply fs f (Prim (FunVar s)) = do x <- M.lookup s fs
-                                  apply fs f x
 apply _ f x = error $ show f ++ " " ++ show x
 
 parseNumber :: Parser QilinPrim
 parseNumber = liftM (Number . read) $ many1 digit
+
+parseBool :: Parser QilinPrim
+parseBool = liftM (Bool . readBool) $ oneOf "tf"
+           where readBool 't' = True
+                 readBool 'f' = False
 
 parseString :: Parser QilinPrim
 parseString = do char '"'
@@ -156,11 +178,11 @@ parseVar :: Parser QilinPrim
 parseVar = liftM (Var) $ many1 lower
 
 symbol :: Parser Char
-symbol = oneOf "~`!@#$%^&*_-+={}|\\:;<>,.?/"
+symbol = oneOf "~`!@#$%^&*_-+=|\\:;<>,.?/"
 
 
 parseQilinPrim :: Parser QilinPrim
-parseQilinPrim = parseNumber <|> parseString <|> parseVar <|> parseQilinFunVar
+parseQilinPrim = parseNumber <|> parseString <|> parseBool <|> parseVar <|> parseQilinFunVar
 
 parseQilinProgram :: Parser QilinProgram
 parseQilinProgram = do program <- sepEndBy1 parseQilinLang newline
@@ -195,14 +217,21 @@ parseQilinListVal = liftM (List) $ do char '['
                                       return x
 
 
+
 parseQilinParensVal :: Parser QilinVal
 parseQilinParensVal = liftM (Parens) $ do char '(' 
                                           x <- sepBy parseQilinVal spaces
                                           char ')'
                                           return x
 
+parseQilinQuoteVal :: Parser QilinVal
+parseQilinQuoteVal = liftM (Quote) $ do char '{' 
+                                        x <- sepBy parseQilinVal spaces
+                                        char '}'
+                                        return x
+
 parseQilinVal :: Parser QilinVal
-parseQilinVal = parseQilinPrimVal <|> parseQilinListVal <|> parseQilinParensVal
+parseQilinVal = parseQilinPrimVal <|> parseQilinListVal <|> parseQilinParensVal <|> parseQilinQuoteVal
 
 parseQilinFunVar :: Parser QilinPrim
 parseQilinFunVar = liftM (FunVar) $ many1 symbol <|> (liftM return upper)

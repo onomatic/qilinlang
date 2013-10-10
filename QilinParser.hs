@@ -23,10 +23,14 @@ data QilinLang = Val QilinVal
                  deriving (Show)
 
 
-data QilinDataType = DataType TypeName [QilinFun]
+data QilinDataType = DataType QilinType [QilinTypeConstructor]
                    deriving (Show)
 
+data QilinTypeConstructor = TypeCons String QilinType
+                    deriving (Show)
+
 data QilinType = Type TypeName | FunType QilinType QilinType
+                  deriving (Show)
 
 data QilinVal = Prim QilinPrim | FunVal QilinFun | List [QilinVal]
               | Parens [QilinVal] | Quote [QilinVal]
@@ -50,6 +54,11 @@ instance Eq QilinVal where
     (Prim a) == (Prim b) = a == b
     _ == _ = False 
 
+unit :: QilinType 
+unit = Type "()"
+
+unitD :: QilinDataType 
+unitD = DataType unit [TypeCons "()" unit]
 
 parseNumber :: Parser QilinPrim
 parseNumber = liftM (Number . read) $ many1 digit
@@ -69,7 +78,7 @@ parseVar :: Parser QilinPrim
 parseVar = liftM (Var) $ many1 lower
 
 symbol :: Parser Char
-symbol = oneOf "~`!@#$%^&*_-+=|\\:;<>,.?/"
+symbol = oneOf "~`!@#$%^&*_-+=|\\:;<>,.?/[]()"
 
 
 parseQilinPrim :: Parser QilinPrim
@@ -100,13 +109,42 @@ parseQilinDef = do char '#'
                    char ')'
                    return $ FunDef name xs
 
+parseQilinTypeConstructor :: Parser QilinTypeConstructor
+parseQilinTypeConstructor = do name <- many1 symbol
+                               space
+                               string "::"
+                               space
+                               ty <- parseQilinType
+                               return $ TypeCons name ty
+
+parseQilinBasicType :: Parser QilinType 
+parseQilinBasicType = do u <- upper
+                         name <- many1 lower
+                         return $ Type (u:name)
+
+parseQilinFunType :: Parser QilinType 
+parseQilinFunType = do char '('
+                       ty1 <- parseQilinType
+                       space
+                       string "->"
+                       space
+                       ty2 <- parseQilinType
+                       char ')'
+                       return $ FunType ty1 ty2
+
+parseQilinType :: Parser QilinType
+parseQilinType =  parseQilinFunType <|> parseQilinBasicType 
 
 parseQilinDataType :: Parser QilinDataType
 parseQilinDataType = do string "Data"
                         space
                         u <- upper
                         name <- many1 lower
-                        return $ DataType (u:name) []
+                        space
+                        string "where"
+                        (newline)
+                        xs <- endBy1 parseQilinTypeConstructor newline
+                        return $ DataType (Type (u:name)) xs
 
 parseQilinListVal :: Parser QilinVal
 parseQilinListVal = liftM (List) $ do char '[' 
